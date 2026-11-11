@@ -1,0 +1,18 @@
+# render.yaml — deploy lên Render (Blueprint): tạo repo Git rồi chọn "New Blueprint"
+services:
+  - type: web
+    name: thiep-cuoi-online
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      # Điền sau khi tạo Turso (xem README):
+      # - key: TURSO_DATABASE_URL
+      #   sync: false
+      # - key: TURSO_AUTH_TOKEN
+      #   sync: false

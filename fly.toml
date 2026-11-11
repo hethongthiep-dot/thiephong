@@ -1,0 +1,27 @@
+# fly.toml — deploy lên Fly.io: fly launch / fly deploy
+app = "thiep-cuoi-online"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+# Biến môi trường bí mật đặt bằng:
+#   fly secrets set TURSO_DATABASE_URL="libsql://..." TURSO_AUTH_TOKEN="..."
+#   fly secrets set SESSION_SECRET="chuoi-ngau-nhien-dai"
+# Nếu không đặt TURSO_*, app dùng DB local trong volume (cần thêm [mounts] bên dưới).
+# Bỏ comment khối mounts nếu muốn dữ liệu local bền vững trên Fly:
+# [[mounts]]
+#   source = "thiep_cuoi_data"
+#   destination = "/app/data"
