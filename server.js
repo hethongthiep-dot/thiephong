@@ -1156,9 +1156,19 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-app.use(express.static(path.join(__dirname, 'public'), { maxAge: IS_PROD ? '1h' : 0 }));
+app.use(express.static(path.join(__dirname, 'public'), {
+  maxAge: 0,
+  setHeaders(res, filePath) {
+    if (/\.(html|js|css)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'no-cache');
+    } else if (/[/\\]illustrations[/\\]/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+    }
+  },
+}));
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api')) return res.status(404).json({ error: 'Không tìm thấy API' });
+  res.setHeader('Cache-Control', 'no-cache');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 

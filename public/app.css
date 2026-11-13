@@ -248,4 +248,5 @@ button, a, input, textarea, select {
 }
 @keyframes mcHalo{0%{transform:scale(.6);opacity:.75}70%{transform:scale(1.85);opacity:0}100%{transform:scale(1.85);opacity:0}}
 @keyframes mcTrailFade{0%{opacity:.78}100%{opacity:0}}
-@keyframes mcFloatCard{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+@keyframes mcFloatCard{0%,100%{transform:translate(-50%,-50%) translateY(0)}50%{transform:translate(-50%,-50%) translateY(-4px)}}
+@keyframes mcCardShine{0%{transform:translateX(-140%) skewX(-20deg);opacity:0}20%{opacity:.45}55%{transform:translateX(240%) skewX(-20deg);opacity:0}100%{transform:translateX(240%) skewX(-20deg);opacity:0}}
