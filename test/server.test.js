@@ -82,6 +82,13 @@ describe('Thiệp Cưới Cloud API & Security', () => {
     const health = await healthRes.json();
     assert.equal(health.ok, true);
     assert.equal(health.db, 'local');
+
+    // Kiểm tra 6 tranh minh họa mẫu thiệp được phục vụ đầy đủ
+    for (const artName of ['royal', 'traditional', 'garden', 'romantic', 'midnight', 'ocean']) {
+      const artRes = await fetch(`${baseUrl}/illustrations/${artName}.jpg`);
+      assert.equal(artRes.status, 200, `Missing illustration ${artName}`);
+      assert.equal(artRes.headers.get('content-type'), 'image/jpeg');
+    }
   });
 
   it('luồng Auth: đăng ký, ký session HMAC, đăng nhập sai/đúng, fallback cookie và đăng xuất', async () => {
@@ -164,7 +171,7 @@ describe('Thiệp Cưới Cloud API & Security', () => {
     const inv = created.body.data.invitation;
     assert.equal(inv.slug, 'minh-tuan-va-thu-hang');
 
-    // Chặn upload ảnh giả mạo XSS (SVG / HTML)
+    // Chặn upload ảnh giả mạo XSS (SVG / HTML) và giả mạo magic bytes
     const badSvg = await callAction('uploadPhoto', {
       sessionToken: t2,
       invitationId: inv.id,
@@ -172,6 +179,14 @@ describe('Thiệp Cưới Cloud API & Security', () => {
       dataBase64: Buffer.from('<svg onload="alert(1)"></svg>').toString('base64'),
     });
     assert.ok(badSvg.body.error);
+
+    const fakePng = await callAction('uploadPhoto', {
+      sessionToken: t2,
+      invitationId: inv.id,
+      mimeType: 'image/png',
+      dataBase64: Buffer.from('<html><script>alert(1)</script></html>').toString('base64'),
+    });
+    assert.ok(fakePng.body.error);
 
     // Upload ảnh PNG hợp lệ
     const uploaded = await callAction('uploadPhoto', {
@@ -186,20 +201,47 @@ describe('Thiệp Cưới Cloud API & Security', () => {
     const photo = uploaded.body.data.photo;
     assert.equal(photo.url, `/api/photos/${photo.id}/raw`);
 
-    // getInvitationBySlug trả URL gọn nhẹ, không nhồi data:image vào JSON
+    // Upload thêm ảnh thứ 2 và test reorderPhotos
+    const uploaded2 = await callAction('uploadPhoto', {
+      sessionToken: t2,
+      invitationId: inv.id,
+      mimeType: 'image/png',
+      dataBase64: TINY_PNG_BASE64,
+      caption: 'Ảnh cưới 2',
+      kind: 'album',
+    });
+    assert.ok(!uploaded2.body.error, uploaded2.body.error);
+    const photo2 = uploaded2.body.data.photo;
+
+    const reordered = await callAction('reorderPhotos', {
+      sessionToken: t2,
+      invitationId: inv.id,
+      photoIds: [photo2.id, photo.id],
+    });
+    assert.equal(reordered.body.data.ok, true);
+
+    // getInvitationBySlug trả URL gọn nhẹ theo đúng thứ tự mới, không nhồi data:image vào JSON
     const guestView = await callAction('getInvitationBySlug', { slug: inv.slug });
     assert.equal(guestView.body.data.found, true);
-    assert.equal(guestView.body.data.photos.length, 1);
-    assert.equal(guestView.body.data.photos[0].url, `/api/photos/${photo.id}/raw`);
+    assert.equal(guestView.body.data.photos.length, 2);
+    assert.equal(guestView.body.data.photos[0].id, photo2.id);
+    assert.equal(guestView.body.data.photos[0].url, `/api/photos/${photo2.id}/raw`);
     assert.ok(!JSON.stringify(guestView.body).includes('data:image'));
 
-    // Endpoint /api/photos/:id/raw trả binary ảnh thật kèm Cache-Control
+    // Endpoint /api/photos/:id/raw trả binary ảnh thật kèm Cache-Control + ETag / 304 Not Modified
     const rawRes = await fetch(`${baseUrl}/api/photos/${photo.id}/raw`);
     assert.equal(rawRes.status, 200);
     assert.equal(rawRes.headers.get('content-type'), 'image/png');
     assert.ok(rawRes.headers.get('cache-control')?.includes('immutable'));
+    const etag = rawRes.headers.get('etag');
+    assert.ok(etag);
     const rawBuf = Buffer.from(await rawRes.arrayBuffer());
     assert.deepEqual(rawBuf, Buffer.from(TINY_PNG_BASE64, 'base64'));
+
+    const notModifiedRes = await fetch(`${baseUrl}/api/photos/${photo.id}/raw`, {
+      headers: { 'if-none-match': etag },
+    });
+    assert.equal(notModifiedRes.status, 304);
 
     // Khách gửi lời chúc & RSVP
     const wish = await callAction('addWish', {
@@ -232,7 +274,7 @@ describe('Thiệp Cưới Cloud API & Security', () => {
     assert.equal(listU2.body.data.invitations.length, 1);
     assert.equal(listU2.body.data.invitations[0].wishCount, 1);
     assert.equal(listU2.body.data.invitations[0].rsvpCount, 1);
-    assert.equal(listU2.body.data.invitations[0].photoCount, 1);
+    assert.equal(listU2.body.data.invitations[0].photoCount, 2);
 
     // Kiểm tra REST API PUT /api/invitations/:id đồng bộ sang cột data
     const u2Cookie = u2.setCookie.split(';')[0];

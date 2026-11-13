@@ -292,6 +292,23 @@ function safeJson(text, fallback) {
 function canManage(inv, user) {
   return inv.owner_id !== null && Number(inv.owner_id) === Number(user.id);
 }
+function hasValidImageMagicBytes(buf, mime) {
+  if (!Buffer.isBuffer(buf) || buf.length < 12) return false;
+  if (mime === 'image/jpeg' || mime === 'image/jpg') {
+    return buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  }
+  if (mime === 'image/png') {
+    return buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+  }
+  if (mime === 'image/gif') {
+    const hdr = buf.subarray(0, 6).toString('ascii');
+    return hdr === 'GIF87a' || hdr === 'GIF89a';
+  }
+  if (mime === 'image/webp') {
+    return buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP';
+  }
+  return false;
+}
 function validateDataUrlImage(dataUrl) {
   if (!dataUrl || typeof dataUrl !== 'string') {
     return { ok: false, error: 'Dữ liệu ảnh không hợp lệ.' };
@@ -307,7 +324,12 @@ function validateDataUrlImage(dataUrl) {
   if (!ALLOWED_IMAGE_MIMES.has(mime)) {
     return { ok: false, error: 'Chỉ hỗ trợ ảnh JPEG, PNG, WEBP hoặc GIF.' };
   }
-  return { ok: true, dataUrl: `data:${mime};base64,${match[2].replace(/\s+/g, '')}` };
+  const cleanedBase64 = match[2].replace(/\s+/g, '');
+  const buf = Buffer.from(cleanedBase64, 'base64');
+  if (!hasValidImageMagicBytes(buf, mime)) {
+    return { ok: false, error: 'Nội dung tệp ảnh không khớp với định dạng khai báo.' };
+  }
+  return { ok: true, dataUrl: `data:${mime};base64,${cleanedBase64}` };
 }
 
 function actionInvitation(inv) {
@@ -610,6 +632,19 @@ async function handleAction(action, args, req, res) {
       if (action === 'setPhotoKind') await db.execute({ sql: 'UPDATE photos SET kind = ? WHERE id = ?', args: [sanitizeText(a.kind, 30), a.photoId] });
       else if (action === 'updatePhotoCaption') await db.execute({ sql: 'UPDATE photos SET caption = ? WHERE id = ?', args: [sanitizeText(a.caption || '', 300), a.photoId] });
       else await db.execute({ sql: 'DELETE FROM photos WHERE id = ?', args: [a.photoId] });
+      return { ok: true };
+    }
+    case 'reorderPhotos': {
+      const user = await requireActionUser(a, req);
+      const inv = await actionInvitationById(a.invitationId);
+      if (!inv || !canManage(inv, user)) throw new Error('Bạn không có quyền sửa thiệp này.');
+      const ids = Array.isArray(a.photoIds) ? a.photoIds.map((x) => parseInt(x, 10)).filter((x) => Number.isFinite(x) && x > 0) : [];
+      for (let i = 0; i < ids.length; i += 1) {
+        await db.execute({
+          sql: 'UPDATE photos SET sort_order = ? WHERE id = ? AND invitation_id = ?',
+          args: [i, ids[i], inv.id],
+        });
+      }
       return { ok: true };
     }
     case 'addWish': {
@@ -919,9 +954,14 @@ app.get('/api/photos/:id/raw', async (req, res) => {
       return res.status(415).json({ error: 'Định dạng ảnh không được hỗ trợ' });
     }
     const buf = Buffer.from(match[2], 'base64');
+    const etag = `"photo-${photoId}-${buf.length}"`;
+    res.setHeader('ETag', etag);
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    if (req.headers['if-none-match'] === etag) {
+      return res.status(304).end();
+    }
     res.setHeader('Content-Type', mime);
     res.setHeader('Content-Length', buf.length);
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     res.send(buf);
   } catch (e) { console.error('[ENGINE] [photos/raw]', sanitizeLog(e.message || e)); res.status(500).json({ error: 'Lỗi máy chủ' }); }
 });
