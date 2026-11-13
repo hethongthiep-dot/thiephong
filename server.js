@@ -73,9 +73,10 @@ function makeDb() {
       authToken: process.env.TURSO_AUTH_TOKEN || undefined,
     });
   }
-  const dataDir = path.join(__dirname, 'data');
-  fs.mkdirSync(dataDir, { recursive: true });
-  const file = path.join(dataDir, 'wedding.db');
+  const file = process.env.LOCAL_DB_PATH
+    ? path.resolve(process.env.LOCAL_DB_PATH)
+    : path.join(__dirname, 'data', 'wedding.db');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   console.log('[ENGINE] [db] local file:', sanitizeLog(file));
   return createClient({ url: 'file:' + file });
 }
@@ -342,9 +343,10 @@ function actionInvitation(inv) {
 }
 
 function actionPhoto(row) {
+  const id = Number(row.id);
   return {
-    id: Number(row.id),
-    url: row.data_url,
+    id,
+    url: `/api/photos/${id}/raw`,
     caption: row.caption || '',
     kind: row.kind || 'album',
     sortOrder: Number(row.sort_order || 0),
@@ -567,13 +569,13 @@ async function handleAction(action, args, req, res) {
       const inv = await actionInvitationBySlug(a.slug);
       if (!inv) return { found: false, invitation: null, photos: [], wishes: [] };
       const [photos, wishes] = await Promise.all([
-        db.execute({ sql: 'SELECT * FROM photos WHERE invitation_id = ? ORDER BY sort_order ASC, id ASC', args: [inv.id] }),
-        db.execute({ sql: 'SELECT * FROM wishes WHERE invitation_id = ? ORDER BY id DESC LIMIT 200', args: [inv.id] }),
+        db.execute({ sql: 'SELECT id, kind, caption, sort_order FROM photos WHERE invitation_id = ? ORDER BY sort_order ASC, id ASC', args: [inv.id] }),
+        db.execute({ sql: 'SELECT id, name, message, created_at FROM wishes WHERE invitation_id = ? ORDER BY id DESC LIMIT 200', args: [inv.id] }),
       ]);
       return { found: true, invitation: actionInvitation(inv), photos: photos.rows.map(actionPhoto), wishes: wishes.rows.map(actionWish) };
     }
     case 'listPhotos': {
-      const rows = await db.execute({ sql: 'SELECT * FROM photos WHERE invitation_id = ? ORDER BY sort_order ASC, id ASC', args: [a.invitationId] });
+      const rows = await db.execute({ sql: 'SELECT id, kind, caption, sort_order FROM photos WHERE invitation_id = ? ORDER BY sort_order ASC, id ASC', args: [a.invitationId] });
       return { photos: rows.rows.map(actionPhoto) };
     }
     case 'uploadPhoto': {
@@ -594,7 +596,7 @@ async function handleAction(action, args, req, res) {
         sql: 'INSERT INTO photos (invitation_id, kind, data_url, caption, sort_order) VALUES (?, ?, ?, ?, ?)',
         args: [a.invitationId, kind, check.dataUrl, caption, currentCount],
       });
-      const row = await db.execute({ sql: 'SELECT * FROM photos WHERE id = ?', args: [result.lastInsertRowid] });
+      const row = await db.execute({ sql: 'SELECT id, kind, caption, sort_order FROM photos WHERE id = ?', args: [result.lastInsertRowid] });
       return { photo: actionPhoto(row.rows[0]) };
     }
     case 'setPhotoKind':
@@ -894,15 +896,55 @@ app.post('/api/invitations/:id/claim', requireAuth, async (req, res) => {
 });
 
 // ---------------- Photos ----------------
+app.get('/api/photos/:id/raw', async (req, res) => {
+  try {
+    const photoId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(photoId) || photoId <= 0) {
+      return res.status(400).json({ error: 'ID ảnh không hợp lệ' });
+    }
+    const row = await db.execute({
+      sql: 'SELECT id, data_url FROM photos WHERE id = ?',
+      args: [photoId],
+    });
+    const photo = row.rows[0];
+    if (!photo || typeof photo.data_url !== 'string') {
+      return res.status(404).json({ error: 'Không tìm thấy ảnh' });
+    }
+    const match = photo.data_url.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/);
+    if (!match) {
+      return res.status(404).json({ error: 'Dữ liệu ảnh không hợp lệ' });
+    }
+    const mime = match[1].toLowerCase();
+    if (!ALLOWED_IMAGE_MIMES.has(mime)) {
+      return res.status(415).json({ error: 'Định dạng ảnh không được hỗ trợ' });
+    }
+    const buf = Buffer.from(match[2], 'base64');
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Length', buf.length);
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.send(buf);
+  } catch (e) { console.error('[ENGINE] [photos/raw]', sanitizeLog(e.message || e)); res.status(500).json({ error: 'Lỗi máy chủ' }); }
+});
+
 app.get('/api/invitations/:slug/photos', async (req, res) => {
   try {
     const inv = await findInvitationBySlug(req.params.slug);
     if (!inv) return res.status(404).json({ error: 'Không tìm thấy thiệp' });
-    const row = await db.execute({
-      sql: 'SELECT id, kind, data_url, caption, created_at FROM photos WHERE invitation_id = ? ORDER BY created_at ASC',
-      args: [inv.id],
+    const includeData = req.query && req.query.includeData === '1';
+    const sql = includeData
+      ? 'SELECT id, kind, data_url, caption, created_at FROM photos WHERE invitation_id = ? ORDER BY sort_order ASC, id ASC'
+      : 'SELECT id, kind, caption, created_at FROM photos WHERE invitation_id = ? ORDER BY sort_order ASC, id ASC';
+    const row = await db.execute({ sql, args: [inv.id] });
+    res.json({
+      photos: row.rows.map((p) => ({
+        id: Number(p.id),
+        kind: p.kind,
+        url: `/api/photos/${Number(p.id)}/raw`,
+        ...(includeData ? { dataUrl: p.data_url } : {}),
+        caption: p.caption,
+        createdAt: p.created_at,
+      })),
     });
-    res.json({ photos: row.rows.map((p) => ({ id: p.id, kind: p.kind, dataUrl: p.data_url, caption: p.caption, createdAt: p.created_at })) });
   } catch (e) { console.error('[ENGINE] [photos/list]', sanitizeLog(e.message || e)); res.status(500).json({ error: 'Lỗi máy chủ' }); }
 });
 
@@ -926,7 +968,8 @@ app.post('/api/invitations/:slug/photos', requireAuth, async (req, res) => {
       sql: 'INSERT INTO photos (invitation_id, kind, data_url, caption) VALUES (?, ?, ?, ?)',
       args: [inv.id, cleanKind, check.dataUrl, cleanCaption],
     });
-    res.status(201).json({ photo: { id: Number(r.lastInsertRowid), kind: cleanKind, dataUrl: check.dataUrl, caption: cleanCaption } });
+    const photoId = Number(r.lastInsertRowid);
+    res.status(201).json({ photo: { id: photoId, kind: cleanKind, url: `/api/photos/${photoId}/raw`, caption: cleanCaption } });
   } catch (e) { console.error('[ENGINE] [photos/create]', sanitizeLog(e.message || e)); res.status(500).json({ error: 'Lỗi máy chủ' }); }
 });
 
